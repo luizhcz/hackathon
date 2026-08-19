@@ -43,6 +43,8 @@ npm run dev
 ```
 
 A aplicação inicia em modo `FIXTURE`, sem depender de rede ou autenticação durante o Fluxo principal.
+Jobs, imagens operacionais e Trilhas de auditoria ficam em `.data/foto-vira-anuncio.sqlite`.
+Defina `JOB_DATABASE_PATH` para usar outro caminho local.
 
 - Painel: `http://localhost:3000/painel`
 - Captura pelo celular: `http://<IP-DO-NOTEBOOK>:3000/captura`

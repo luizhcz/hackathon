@@ -7,8 +7,10 @@ import { publishJob } from "../jobs/job-publication";
 import { createJobQueue } from "../jobs/job-queue";
 import { createJobStore } from "../jobs/job-store";
 
-function createDemoService() {
-  const store = createJobStore({ initialMode: "fixture" });
+export function createDemoService({
+  databasePath = process.env.JOB_DATABASE_PATH ?? ".data/foto-vira-anuncio.sqlite",
+}: { databasePath?: string } = {}) {
+  const store = createJobStore({ initialMode: "fixture", databasePath });
   const processor = createJobProcessor({ store, runtime: new LocalCodexSdkRuntime() });
   const assignedFixtures = new Map<string, DemoFixture>();
   let fixtureCursor = 0;
@@ -38,6 +40,8 @@ function createDemoService() {
     listJobs: () => store.listJobs(),
     getJob: (id: string) => store.getJob(id),
     getImage: (id: string) => store.getImage(id),
+    getAudit: (id: string, options?: { afterSequence?: number; limit?: number }) =>
+      store.getAudit(id, options),
     getMode: () => store.getMode(),
     setMode(mode: ModoExecucao) {
       store.setMode(mode);
@@ -56,6 +60,9 @@ function createDemoService() {
     clear() {
       store.clear();
     },
+    close() {
+      store.close();
+    },
   };
 }
 
@@ -63,6 +70,25 @@ export type DemoService = ReturnType<typeof createDemoService>;
 
 const globalDemo = globalThis as typeof globalThis & { __fotoViraAnuncioDemo?: DemoService };
 
-export const demoService = globalDemo.__fotoViraAnuncioDemo ?? createDemoService();
+function getDemoService(): DemoService {
+  globalDemo.__fotoViraAnuncioDemo ??= createDemoService();
+  return globalDemo.__fotoViraAnuncioDemo;
+}
 
-if (process.env.NODE_ENV !== "production") globalDemo.__fotoViraAnuncioDemo = demoService;
+export const demoService: DemoService = {
+  listJobs: () => getDemoService().listJobs(),
+  getJob: (id) => getDemoService().getJob(id),
+  getImage: (id) => getDemoService().getImage(id),
+  getAudit: (id, options) => getDemoService().getAudit(id, options),
+  getMode: () => getDemoService().getMode(),
+  setMode: (mode) => getDemoService().setMode(mode),
+  upload: (image) => getDemoService().upload(image),
+  enqueueFixtures: () => getDemoService().enqueueFixtures(),
+  publish: (id, announcement) => getDemoService().publish(id, announcement),
+  clear: () => getDemoService().clear(),
+  close: () => {
+    if (!globalDemo.__fotoViraAnuncioDemo) return;
+    globalDemo.__fotoViraAnuncioDemo.close();
+    delete globalDemo.__fotoViraAnuncioDemo;
+  },
+};

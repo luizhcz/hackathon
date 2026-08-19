@@ -24,6 +24,7 @@ backend.
 | `POST /api/upload` | `202 { id }` ou erro de imagem |
 | `GET /api/jobs` | `Job[]`, sem bytes da imagem |
 | `GET /api/jobs/:id/imagem` | imagem indicada por `imagem_url` |
+| `GET /api/jobs/:id/audit` | Projeção de auditoria de usuário, versionada e paginada por `after_sequence` |
 | `POST /api/jobs/:id/publicar` | `Job` publicado ou erro de transição |
 | `GET /api/demo/modo` | `{ modo }` |
 | `POST /api/demo/modo` | `{ modo }` |

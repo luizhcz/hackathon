@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
+import type { UserAuditPage } from "@/audit/types";
 import type { Job, ModoExecucao, RedatorOut } from "@/domain/types";
 
 const MODE_LABELS: Record<ModoExecucao, string> = { live: "LIVE", local: "LOCAL", fixture: "FIXTURE" };
@@ -11,6 +12,7 @@ export default function DashboardPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [mode, setModeState] = useState<ModoExecucao>("fixture");
   const [reviewing, setReviewing] = useState<string | null>(null);
+  const [audits, setAudits] = useState<Record<string, UserAuditPage | "loading" | "error">>({});
 
   const refresh = useCallback(async () => {
     const [jobsResponse, modeResponse] = await Promise.all([
@@ -45,7 +47,21 @@ export default function DashboardPage() {
     if (!window.confirm("Limpar todos os Jobs da demonstração?")) return;
     await fetch("/api/demo/jobs", { method: "DELETE" });
     setJobs([]);
+    setAudits({});
   }, []);
+
+  const loadAudit = useCallback(async (id: string) => {
+    if (audits[id]) return;
+    setAudits((current) => ({ ...current, [id]: "loading" }));
+    try {
+      const response = await fetch(`/api/jobs/${id}/audit`, { cache: "no-store" });
+      if (!response.ok) throw new Error("audit unavailable");
+      const audit = (await response.json()) as UserAuditPage;
+      setAudits((current) => ({ ...current, [id]: audit }));
+    } catch {
+      setAudits((current) => ({ ...current, [id]: "error" }));
+    }
+  }, [audits]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -119,6 +135,8 @@ export default function DashboardPage() {
                 ))}
               </ol>
 
+              <AuditTimeline audit={audits[job.id]} jobId={job.id} onOpen={loadAudit} />
+
               {job.preco?.degradado && (
                 <div className="degraded-note">Estimativa local · R$ {job.preco.preco_min}–{job.preco.preco_max}</div>
               )}
@@ -144,6 +162,49 @@ export default function DashboardPage() {
       )}
       <footer className="shortcut-bar"><span><kbd>M</kbd> modo</span><span><kbd>5</kbd> fixtures</span><span><kbd>R</kbd> limpar</span></footer>
     </main>
+  );
+}
+
+function AuditTimeline({
+  audit,
+  jobId,
+  onOpen,
+}: {
+  audit: UserAuditPage | "loading" | "error" | undefined;
+  jobId: string;
+  onOpen: (id: string) => Promise<void>;
+}) {
+  return (
+    <details
+      className="audit-timeline"
+      onToggle={(event) => {
+        if (event.currentTarget.open) void onOpen(jobId);
+      }}
+    >
+      <summary>Trilha de auditoria</summary>
+      <div className="audit-content">
+        {audit === "loading" && <p className="audit-status">Carregando timeline…</p>}
+        {audit === "error" && (
+          <p className="audit-status audit-error">Não foi possível carregar a timeline.</p>
+        )}
+        {typeof audit === "object" && (
+          <ol className="audit-records">
+            {audit.records.map((record) => (
+              <li key={record.id}>
+                <time dateTime={record.occurred_at}>
+                  {new Date(record.occurred_at).toLocaleTimeString("pt-BR", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                  })}
+                </time>
+                <strong>{record.summary}</strong>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </details>
   );
 }
 
