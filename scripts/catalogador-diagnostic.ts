@@ -6,7 +6,6 @@ import { CodexRuntimeError } from "../src/codex/codex-runtime";
 import { LocalCodexSdkRuntime } from "../src/codex/local-codex-sdk-runtime";
 import { CATALOGADOR_PROMPT } from "../src/codex/prompts";
 import { catalogadorSchema } from "../src/domain/schemas";
-import { DEMO_FIXTURES } from "../src/fixtures/demo-fixtures";
 
 const timeoutMs = Number(process.env.CATALOGADOR_TIMEOUT_MS ?? 20_000);
 if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
@@ -14,16 +13,24 @@ if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
 }
 
 const imagePath = process.env.CATALOGADOR_IMAGE_PATH;
+if (!imagePath) {
+  process.stderr.write(
+    `${JSON.stringify({
+      status: "configuration_error",
+      code: "IMAGE_REQUIRED",
+      message: "Defina CATALOGADOR_IMAGE_PATH com uma foto representativa em PNG ou JPEG.",
+    })}\n`,
+  );
+  process.exit(2);
+}
 const imageExtension = imagePath ? extname(imagePath).toLowerCase() : null;
 if (imageExtension && ![".png", ".jpg", ".jpeg"].includes(imageExtension)) {
   throw new Error("CATALOGADOR_IMAGE_PATH deve apontar para uma imagem PNG ou JPEG.");
 }
-const image = imagePath
-  ? {
-      bytes: new Uint8Array(await readFile(imagePath)),
-      mime: imageExtension === ".png" ? "image/png" as const : "image/jpeg" as const,
-    }
-  : DEMO_FIXTURES[0].image;
+const image = {
+  bytes: new Uint8Array(await readFile(imagePath)),
+  mime: imageExtension === ".png" ? "image/png" as const : "image/jpeg" as const,
+};
 const controller = new AbortController();
 const timer = setTimeout(() => controller.abort(), timeoutMs);
 const startedAt = performance.now();
@@ -37,15 +44,16 @@ try {
     webSearch: "disabled",
     signal: controller.signal,
   });
-  process.stdout.write(
-    `${JSON.stringify({
-      status: "completed",
-      duration_ms: Math.round(performance.now() - startedAt),
-      timeout_ms: timeoutMs,
-      confidence: result.value.confianca,
-      category_known: result.value.categoria !== null,
-    })}\n`,
-  );
+  const validIdentification = result.value.categoria !== null && result.value.confianca !== "baixa";
+  const diagnostic = {
+    status: validIdentification ? "completed" : "unsafe_identification",
+    duration_ms: Math.round(performance.now() - startedAt),
+    timeout_ms: timeoutMs,
+    confidence: result.value.confianca,
+    category_known: result.value.categoria !== null,
+  };
+  (validIdentification ? process.stdout : process.stderr).write(`${JSON.stringify(diagnostic)}\n`);
+  if (!validIdentification) process.exitCode = 1;
 } catch (error) {
   const code = error instanceof CodexRuntimeError ? error.code : "FAILED";
   process.stderr.write(

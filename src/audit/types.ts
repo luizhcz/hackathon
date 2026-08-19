@@ -5,6 +5,14 @@ export type AuditEventType =
   | "stage.completed"
   | "stage.failed"
   | "fallback.applied";
+export type AuditCode =
+  | "TIMEOUT"
+  | "CANCELLED"
+  | "RUNTIME_FAILED"
+  | "INVALID_OUTPUT"
+  | "EMPTY_RESPONSE"
+  | "LOCAL_PRICE_TABLE"
+  | "LOCAL_WRITER_TEMPLATE";
 
 export type UserAuditRecord = {
   schema_version: 1;
@@ -16,7 +24,7 @@ export type UserAuditRecord = {
   stage: AuditStage | null;
   status: "started" | "completed" | "failed" | "applied";
   duration_ms: number | null;
-  code: string | null;
+  code: AuditCode | null;
   summary: string;
 };
 

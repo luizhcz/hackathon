@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import type { AuditStage, UserAuditPage, UserAuditRecord } from "../audit/types";
+import type { AuditCode, AuditStage, UserAuditPage, UserAuditRecord } from "../audit/types";
 import type { Job, ModoExecucao, Passo } from "../domain/types";
 
 type ImageInput = {
@@ -20,7 +20,7 @@ export type PendingAuditEvent = {
   stage: AuditStage;
   status: UserAuditRecord["status"];
   duration_ms?: number;
-  code?: string;
+  code?: AuditCode;
   summary: string;
 };
 

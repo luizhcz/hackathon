@@ -1,7 +1,9 @@
 # Diagnóstico dos limites das etapas LIVE
 
-Em 19 de agosto de 2026, o harness `npm run diagnose:catalogador` executou o
-Catalogador real em `7.862 ms`, abaixo do limite de `20.000 ms`. Duas execuções
+Em 19 de agosto de 2026, o primeiro probe do Catalogador real terminou em
+`7.862 ms`, abaixo do limite de `20.000 ms`; sua imagem mínima não produziu uma
+Identificação segura e por isso não serve como confirmação do caminho LIVE.
+Duas execuções com uma imagem representativa
 LIVE completas com a mesma imagem de diagnóstico concluíram o Catalogador em
 `8.139 ms` e `10.490 ms`. Esses dados não sustentam alterar seu limite atual.
 
@@ -22,7 +24,8 @@ Catalogador em `8.313 ms`, o Precificador em `26.350 ms` e o Redator em
 `13.073 ms`. O Job chegou a `aguardando` sem fallback e a API expôs os sete
 registros de criação, início e conclusão em ordem causal.
 
-Para repetir com uma foto representativa sem incorporá-la ao repositório:
+O harness exige uma foto representativa sem incorporá-la ao repositório e só
+termina com sucesso quando a Identificação possui categoria e confiança não baixa:
 
 ```bash
 CATALOGADOR_IMAGE_PATH=/caminho/produto.png npm run diagnose:catalogador

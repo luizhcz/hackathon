@@ -4,6 +4,7 @@ import {
   type CodexRunResult,
   type CodexRuntime,
 } from "../codex/codex-runtime";
+import type { AuditCode } from "../audit/types";
 import { CATALOGADOR_PROMPT, precificadorPrompt, redatorPrompt } from "../codex/prompts";
 import { catalogadorSchema, precificadorSchema, redatorSchema } from "../domain/schemas";
 import type { CatalogadorOut, Job, PassoId, PrecificadorOut, RedatorOut } from "../domain/types";
@@ -51,7 +52,7 @@ class StageTimeoutError extends Error {
   }
 }
 
-function failureCode(error: unknown): string {
+function failureCode(error: unknown): AuditCode {
   if (error instanceof StageTimeoutError) return "TIMEOUT";
   if (error instanceof CodexRuntimeError) {
     return error.code === "FAILED" ? "RUNTIME_FAILED" : error.code;
@@ -257,7 +258,7 @@ export function createJobProcessor({
                   type: "fallback.applied" as const,
                   stage: "precificador" as const,
                   status: "applied" as const,
-                  code: "LOCAL_PRICE_TABLE",
+                  code: "LOCAL_PRICE_TABLE" as const,
                   summary: "Tabela local aplicada ao preço.",
                 }]
               : []),
