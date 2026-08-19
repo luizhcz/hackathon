@@ -12,7 +12,7 @@ O argumento do palco é físico: o apresentador fotografa o produto, larga o cel
 
 - Uma foto JPEG ou PNG enviada pelo celular cria um Job imediatamente.
 - O painel mostra os quatro passos desde o nascimento do Job e atualiza seu estado sem intervenção.
-- Identificação, preço e redação usam exclusivamente Codex CLI no modo `LIVE`.
+- Identificação, preço e redação usam exclusivamente Codex por meio do SDK oficial no modo `LIVE`.
 - Falhas de preço ou redação produzem Resultado degradado por código determinístico.
 - Identificação insegura nunca é publicada diretamente; vira Exceção e exige Revisão humana.
 - A confirmação publica o Anúncio numa vitrine local.
@@ -49,52 +49,54 @@ Toda capacidade de inteligência artificial usa Codex:
 | Momento | Recurso |
 |---|---|
 | Desenvolvimento | Codex CLI |
-| Runtime de IA | Codex CLI em modo não interativo |
-| Integração Node.js | `CodexRunner` sobre `child_process.spawn` |
-| Visão | Codex CLI com imagem local |
-| Saída estruturada | Codex CLI com JSON Schema |
-| Preço ao vivo | Web search do Codex CLI |
+| Runtime de IA | Threads locais do Codex |
+| Integração Node.js | `LocalCodexSdkRuntime` sobre `@openai/codex-sdk@0.148.0` |
+| Visão | Entrada de imagem local do Codex SDK |
+| Saída estruturada | `outputSchema` do Codex SDK |
+| Preço ao vivo | Busca web `live` do Codex SDK |
 | Fallbacks | TypeScript determinístico, sem IA |
 | Fixtures | Saídas previamente geradas pelo Codex |
 
 Não usar:
 
 - OpenAI Agents SDK;
-- `@openai/codex-sdk`;
 - Responses API diretamente;
 - function calling;
 - outro modelo ou serviço de IA;
 - geração ou edição de imagem.
 
-### 3.1 CodexRunner
+### 3.1 CodexRuntime
 
-`CodexRunner` é o único adaptador de IA da aplicação. Ele deve:
+`CodexRuntime` é o único seam de IA da aplicação. Sua interface recebe perfil, prompt, imagem opcional, JSON Schema e sinal de cancelamento, e devolve somente o resultado validado e metadados normalizados. `LocalCodexSdkRuntime` é o único adapter real nesta entrega e deve:
 
-- usar `child_process.spawn`, nunca shell ou comando concatenado;
-- enviar prompt por `stdin` e argumentos como array;
-- usar um JSON Schema versionado por perfil;
-- capturar a mensagem final e fazer `JSON.parse`;
+- fixar exatamente `@openai/codex-sdk@0.148.0` e versionar o lockfile;
+- iniciar uma thread nova e isolada para cada perfil de cada Job;
+- enviar imagem como entrada local estruturada somente para o Catalogador;
+- passar um JSON Schema versionado em `outputSchema` para cada perfil;
+- capturar a resposta final e fazer `JSON.parse`;
 - validar o objeto antes de devolvê-lo ao pipeline;
-- encerrar o subprocesso ao atingir o timeout;
-- nunca expor eventos, raciocínio ou saída bruta ao front;
-- apagar arquivos temporários em `finally`.
+- cancelar a execução com `AbortSignal` ao atingir o timeout;
+- consumir o streaming internamente e nunca expor tipos, eventos, raciocínio ou saída bruta do SDK;
+- traduzir falhas do SDK para erros estáveis do contrato;
+- apagar workspace e arquivos temporários em `finally`.
 
 Configuração comum a todas as execuções:
 
 ```text
---sandbox read-only
---ask-for-approval never
---ephemeral
---ignore-user-config
---ignore-rules
---skip-git-repo-check
---model gpt-5.4-mini
-model_reasoning_effort=low
+sandboxMode: read-only
+approvalPolicy: never
+skipGitRepoCheck: true
+model: gpt-5.4-mini
+modelReasoningEffort: low
+networkAccessEnabled: false
+webSearchMode: disabled
+features.apps: false
+features.plugins: false
 ```
 
-Desabilitar shell, MCP, apps, hooks e subagentes. O Catalogador e o Redator também executam com web search desabilitada. Apenas o Precificador `LIVE` recebe busca live; a flag global deve aparecer antes do subcomando `exec`.
+Cada thread executa em workspace temporário isolado contendo somente os artefatos de entrada necessários. Catalogador e Redator permanecem sem rede e com busca desabilitada. Apenas o Precificador `LIVE` recebe `networkAccessEnabled: true` e `webSearchMode: live`. Qualquer ampliação futura de permissão deve ser mínima, limitada ao perfil que a exige e coberta por teste focado; aprovação permanece `never`.
 
-O runtime usa o login local já configurado no Codex CLI. Antes da demo, executar:
+O SDK controla um runtime Codex local e usa o login já configurado. Antes da demo, executar:
 
 ```bash
 codex --version
@@ -111,7 +113,7 @@ Cada Job usa até três execuções novas, sequenciais e efêmeras:
 2. **Precificador** — recebe a Identificação e `PrecificadorOut`; somente ele pode pesquisar a web.
 3. **Redator** — recebe Identificação e preço e devolve `RedatorOut`.
 
-Os perfis não compartilham thread. O servidor passa explicitamente apenas o resultado validado da etapa anterior. Isso mantém permissões, contexto e falhas isolados.
+Os perfis não compartilham nem retomam threads. O servidor passa explicitamente apenas o resultado validado da etapa anterior. Isso mantém permissões, contexto e falhas isolados.
 
 ## 4. Arquitetura
 
@@ -125,7 +127,7 @@ Celular /captura ──POST /api/upload──────────┐
                                    └────────┬─────────┘
                                             │
                             ┌───────────────▼───────────────┐
-                            │ CodexRunner                   │
+                            │ CodexRuntime                  │
                             │ 1 Catalogador  imagem+schema  │
                             │ 2 Precificador busca+schema   │
                             │ 3 Redator      schema         │
@@ -140,7 +142,7 @@ Projetor /painel ──GET /api/jobs (800 ms)───┘
 | Decisão | Escolha | Motivo |
 |---|---|---|
 | Aplicação | Next.js App Router + TypeScript | Um único projeto e uma única rede local |
-| Runtime | Node.js local | Codex CLI exige processo local; não funciona como Edge runtime |
+| Runtime | Node.js local | Codex SDK é server-side e controla threads locais; não funciona como Edge runtime |
 | Estado | `Map` singleton em `globalThis` | Evita banco e sobrevive a recargas de módulo em desenvolvimento |
 | Trabalho | Fila FIFO com concorrência 2 | Protege latência e recursos durante cinco uploads |
 | Atualização | Polling a cada 800 ms | Recupera sozinho de perda temporária de rede |
@@ -149,7 +151,7 @@ Projetor /painel ──GET /api/jobs (800 ms)───┘
 
 O `Map` é a persistência oficial. Cada entrada interna armazena Job, bytes da imagem e MIME. `GET /api/jobs` nunca serializa os bytes.
 
-Como o Codex CLI recebe imagem por caminho, o Catalogador cria uma cópia em diretório temporário isolado. Essa cópia é um adaptador de transporte, não persistência, e deve ser removida após a execução. A imagem continua disponível no painel pelos bytes mantidos no `Map`.
+Como o Codex SDK recebe imagem local por caminho, o Catalogador cria uma cópia no workspace temporário isolado. Essa cópia é transporte, não persistência, e deve ser removida após a execução. A imagem continua disponível no painel pelos bytes mantidos no `Map`.
 
 ## 5. Modos de execução
 
@@ -597,9 +599,9 @@ O atalho `5` cria cinco Jobs `fixture`. Eles percorrem os mesmos estados e contr
 ### 0:00–0:15 — Scaffold e smoke Codex
 
 - Criar Next.js com TypeScript.
-- Implementar o menor `CodexRunner` possível.
+- Implementar a interface mínima `CodexRuntime` e o adapter `LocalCodexSdkRuntime`.
 - Validar três capacidades: JSON Schema, imagem JPEG/PNG e busca web.
-- Confirmar modelo `gpt-5.4-mini`, autenticação e flags de sandbox.
+- Confirmar modelo `gpt-5.4-mini`, autenticação, streaming, cancelamento e opções de sandbox.
 
 Se imagem ou schema não funcionar em 15 minutos, o modo live deixa de ser caminho crítico; seguir construindo com fixtures e retornar somente se houver folga.
 
@@ -705,7 +707,7 @@ Se o modo for `FIXTURE`, tratá-lo como replay de saídas previamente produzidas
 - `M` troca para `LOCAL` em segundos se apenas a busca estiver instável.
 - `R` limpa o ensaio anterior.
 - Um QR code ou URL curta abre `/captura` no celular.
-- Não atualizar dependências, modelo ou Codex CLI depois do ensaio final.
+- Não atualizar dependências, modelo, Codex SDK ou runtime Codex depois do ensaio final.
 
 Checklist antes de subir ao palco:
 
@@ -724,7 +726,7 @@ Checklist antes de subir ao palco:
 
 | Risco | Consequência | Mitigação da demo |
 |---|---|---|
-| Codex CLI é um processo local | Não há deploy serverless | Rodar somente no notebook |
+| Codex SDK controla um runtime local | Não há deploy serverless | Rodar somente no notebook nesta demo |
 | Login local expira | Runtime live indisponível | Preflight e `FIXTURE` |
 | Três processos aumentam latência | Tempo não cabe em 15 s | Medir, não prometer; fixtures para lote |
 | Busca demora ou retorna lixo | Preço instável | Uma tentativa de 8 s e tabela local |
@@ -744,7 +746,8 @@ Testes determinísticos prioritários:
 - publicação rejeita `processando`;
 - publicação de `publicado` é idempotente;
 - Exceção não mostra botão normal;
-- mudança de modo não altera Job existente.
+- mudança de modo não altera Job existente;
+- contrato de `CodexRuntime` com Adapter determinístico, observando somente estados do Job.
 
 Smoke tests manuais prioritários:
 
@@ -752,14 +755,15 @@ Smoke tests manuais prioritários:
 - limite e MIME de upload;
 - polling sem bytes de imagem;
 - arquivo temporário removido após Catalogador;
-- interrupção do subprocesso no timeout;
+- cancelamento da execução no timeout;
+- contrato real de `LocalCodexSdkRuntime` para schema, imagem, streaming, cancelamento e busca `live`;
 - fluxo completo no aparelho e hotspot do palco.
 
 ## 20. Referências oficiais
 
-- [Codex CLI em modo não interativo](https://learn.chatgpt.com/docs/non-interactive-mode)
-- [Entradas de imagem no Codex CLI](https://learn.chatgpt.com/docs/image-inputs?surface=cli)
-- [Web search no Codex CLI](https://learn.chatgpt.com/docs/web-search?surface=cli)
+- [Codex SDK](https://learn.chatgpt.com/docs/codex-sdk)
+- [Entradas de imagem no Codex](https://learn.chatgpt.com/docs/image-inputs?surface=cli)
+- [Web search no Codex](https://learn.chatgpt.com/docs/web-search?surface=cli)
 - [Configuração, sandbox e permissões do Codex](https://learn.chatgpt.com/docs/config-file/config-basic)
 
-As decisões de domínio e arquitetura relacionadas estão em [`CONTEXT.md`](../../CONTEXT.md), [`ADR 0001`](../adr/0001-degradar-falhas-tecnicas-e-revisar-identificacao-insegura.md) e [`ADR 0002`](../adr/0002-codex-como-unica-camada-de-inteligencia-artificial.md).
+As decisões de domínio e arquitetura relacionadas estão em [`CONTEXT.md`](../../CONTEXT.md), [`ADR 0001`](../adr/0001-degradar-falhas-tecnicas-e-revisar-identificacao-insegura.md) e [`ADR 0003`](../adr/0003-integrar-codex-pelo-sdk-atras-de-contrato-proprio.md). O spike preservado em `spike/codex-sdk`, commit `a153d00`, é a fonte primária da integração local validada e não deve ser mesclado diretamente.
