@@ -11,14 +11,15 @@ Workspace para desenvolver a demo **Foto vira anúncio** com Codex de ponta a po
 
 ## Trabalho paralelo
 
-A `main` contém a aplicação funcional. O protótipo visual descartável é
-desenvolvido separadamente na branch `prototype/demo-ui`, com dados simulados
-no navegador.
+A `main` contém a aplicação funcional e uma cópia isolada do protótipo visual
+em `prototype/demo-ui`, com dados simulados no navegador. O protótipo continua
+sendo evoluído na branch `prototype/demo-ui` e não é importado pelo build da
+aplicação funcional.
 
 Frontend e backend trabalham em paralelo por meio do contrato HTTP e do DTO
 `Job`. As decisões visuais escolhidas — captura A, painel C e loja B — chegam à
-aplicação por handoff e são reimplementadas nas páginas existentes; o código do
-protótipo não é mesclado diretamente.
+aplicação por handoff e são reimplementadas nas páginas existentes; manter o
+protótipo no repositório não o conecta ao backend.
 
 ## Como usar
 

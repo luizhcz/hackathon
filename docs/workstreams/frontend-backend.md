@@ -1,8 +1,9 @@
 # Trabalho paralelo de frontend e backend
 
 Este acordo permite que duas pessoas trabalhem ao mesmo tempo sem editar os
-mesmos arquivos. A `main` contém a aplicação funcional; a branch
-`prototype/demo-ui` responde somente à pergunta visual com dados simulados.
+mesmos arquivos. A `main` contém a aplicação funcional e pode registrar cópias
+aprovadas do protótipo; a branch `prototype/demo-ui` responde somente à
+pergunta visual com dados simulados.
 
 ## Seam entre os módulos
 
@@ -82,7 +83,9 @@ interface.
 1. Frontend conclui #9, #10 e #11 em `prototype/demo-ui`.
 2. Backend evolui a aplicação a partir de `origin/main`, sem importar o código
    descartável do protótipo.
-3. Cada frente publica commits pequenos somente em sua área de ownership.
+3. Cada frente publica commits pequenos somente em sua área de ownership; um
+   marco aprovado do protótipo pode ser aplicado à `main` sem conectá-lo à
+   aplicação funcional.
 4. Ao concluir #11, frontend produz um handoff com as decisões A/C/B, estados e
    comportamento validado.
 5. Uma branch nova de integração nasce da `main`; nela, frontend reimplementa
@@ -90,9 +93,10 @@ interface.
 6. Backend revisa apenas a aderência ao contrato; frontend revisa apenas o
    comportamento e a apresentação das telas.
 
-Não fazer merge ou rebase da `main` dentro da branch do protótipo: a `main`
-removeu `prototype/demo-ui` e contém todo o backend. A portabilidade ocorre pelo
-handoff e pela interface, não pela mistura das implementações.
+Não fazer merge ou rebase da `main` dentro da branch do protótipo: a aplicação
+funcional e o protótipo têm ciclos independentes. A presença do diretório
+estático na `main` serve para consulta e demonstração; a portabilidade ocorre
+pelo handoff e pela interface, não pela importação do protótipo no build.
 
 ## Decisões existentes
 
