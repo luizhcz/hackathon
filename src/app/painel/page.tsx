@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import type { UserAuditPage } from "@/audit/types";
 import type { Job, ModoExecucao, RedatorOut } from "@/domain/types";
@@ -13,6 +13,9 @@ export default function DashboardPage() {
   const [mode, setModeState] = useState<ModoExecucao>("fixture");
   const [reviewing, setReviewing] = useState<string | null>(null);
   const [audits, setAudits] = useState<Record<string, UserAuditPage | "loading" | "error">>({});
+  const [openAudits, setOpenAudits] = useState<Record<string, boolean>>({});
+  const auditCursors = useRef<Record<string, number>>({});
+  const auditRequests = useRef(new Set<string>());
 
   const refresh = useCallback(async () => {
     const [jobsResponse, modeResponse] = await Promise.all([
@@ -48,20 +51,53 @@ export default function DashboardPage() {
     await fetch("/api/demo/jobs", { method: "DELETE" });
     setJobs([]);
     setAudits({});
+    setOpenAudits({});
+    auditCursors.current = {};
+    auditRequests.current.clear();
   }, []);
 
   const loadAudit = useCallback(async (id: string) => {
-    if (audits[id]) return;
-    setAudits((current) => ({ ...current, [id]: "loading" }));
-    try {
-      const response = await fetch(`/api/jobs/${id}/audit`, { cache: "no-store" });
-      if (!response.ok) throw new Error("audit unavailable");
-      const audit = (await response.json()) as UserAuditPage;
-      setAudits((current) => ({ ...current, [id]: audit }));
-    } catch {
-      setAudits((current) => ({ ...current, [id]: "error" }));
+    if (auditRequests.current.has(id)) return;
+    auditRequests.current.add(id);
+    const afterSequence = auditCursors.current[id] ?? 0;
+    if (afterSequence === 0) {
+      setAudits((current) => ({ ...current, [id]: "loading" }));
     }
-  }, [audits]);
+    try {
+      const response = await fetch(
+        `/api/jobs/${id}/audit?after_sequence=${afterSequence}`,
+        { cache: "no-store" },
+      );
+      if (!response.ok) throw new Error("audit unavailable");
+      const nextPage = (await response.json()) as UserAuditPage;
+      auditCursors.current[id] = nextPage.next_sequence;
+      setAudits((current) => {
+        const previous = current[id];
+        if (typeof previous !== "object") return { ...current, [id]: nextPage };
+        return {
+          ...current,
+          [id]: { ...nextPage, records: [...previous.records, ...nextPage.records] },
+        };
+      });
+    } catch {
+      setAudits((current) => ({
+        ...current,
+        [id]: typeof current[id] === "object" ? current[id] : "error",
+      }));
+    } finally {
+      auditRequests.current.delete(id);
+    }
+  }, []);
+
+  useEffect(() => {
+    const ids = Object.entries(openAudits)
+      .filter(([, open]) => open)
+      .map(([id]) => id);
+    if (ids.length === 0) return;
+    void Promise.all(ids.map(loadAudit));
+    const timer = window.setInterval(() => void Promise.all(ids.map(loadAudit)), 800);
+    return () => window.clearInterval(timer);
+  }, [loadAudit, openAudits]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -135,10 +171,19 @@ export default function DashboardPage() {
                 ))}
               </ol>
 
-              <AuditTimeline audit={audits[job.id]} jobId={job.id} onOpen={loadAudit} />
+              <AuditTimeline
+                audit={audits[job.id]}
+                jobId={job.id}
+                onToggle={(id, open) =>
+                  setOpenAudits((current) => ({ ...current, [id]: open }))
+                }
+              />
 
               {job.preco?.degradado && (
-                <div className="degraded-note">Estimativa local · R$ {job.preco.preco_min}–{job.preco.preco_max}</div>
+                <div className="degraded-note">
+                  {job.preco.estrategia === "tabela_local" ? "Estimativa local" : "Resultado degradado"}
+                  {` · R$ ${job.preco.preco_min}–${job.preco.preco_max}`}
+                </div>
               )}
               {job.status === "excecao" && (
                 <div className="exception-note">O Codex não teve confiança e exigiu revisão.</div>
@@ -168,17 +213,17 @@ export default function DashboardPage() {
 function AuditTimeline({
   audit,
   jobId,
-  onOpen,
+  onToggle,
 }: {
   audit: UserAuditPage | "loading" | "error" | undefined;
   jobId: string;
-  onOpen: (id: string) => Promise<void>;
+  onToggle: (id: string, open: boolean) => void;
 }) {
   return (
     <details
       className="audit-timeline"
       onToggle={(event) => {
-        if (event.currentTarget.open) void onOpen(jobId);
+        onToggle(jobId, event.currentTarget.open);
       }}
     >
       <summary>Trilha de auditoria</summary>

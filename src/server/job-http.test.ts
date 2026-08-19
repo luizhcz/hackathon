@@ -27,9 +27,15 @@ describe("Job HTTP", () => {
   it("returns the versioned user audit projection by default", async () => {
     const store = createJobStore({ initialMode: "local" });
     const job = store.createJob({ bytes: new Uint8Array([1]), mime: "image/png" });
+    store.updateJobWithAudit(job.id, (current) => current, [{
+      type: "stage.started",
+      stage: "catalogador",
+      status: "started",
+      summary: "Catalogador iniciado.",
+    }]);
 
     const response = handleAuditRequest(
-      new Request(`http://localhost/api/jobs/${job.id}/audit?after_sequence=0`),
+      new Request(`http://localhost/api/jobs/${job.id}/audit?after_sequence=0&limit=1`),
       job.id,
       store,
     );
@@ -42,6 +48,17 @@ describe("Job HTTP", () => {
       audience: "user",
       records: [{ sequence: 1, type: "job.created" }],
       next_sequence: 1,
+      has_more: true,
+    });
+
+    const nextResponse = handleAuditRequest(
+      new Request(`http://localhost/api/jobs/${job.id}/audit?after_sequence=1`),
+      job.id,
+      store,
+    );
+    await expect(nextResponse.json()).resolves.toMatchObject({
+      records: [{ sequence: 2, type: "stage.started", stage: "catalogador" }],
+      next_sequence: 2,
       has_more: false,
     });
     store.close();

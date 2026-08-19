@@ -121,6 +121,38 @@ describe("Job store", () => {
     store.close();
   });
 
+  it("rolls back a state change when its audit record cannot be appended", () => {
+    const databasePath = temporaryDatabasePath();
+    const store = createJobStore({ initialMode: "live", databasePath });
+    const job = store.createJob({ bytes: new Uint8Array([4]), mime: "image/png" });
+    const database = new DatabaseSync(databasePath);
+    database.exec(`
+      CREATE TRIGGER reject_stage_audit
+      BEFORE INSERT ON audit_records
+      WHEN NEW.type = 'stage.started'
+      BEGIN
+        SELECT RAISE(ABORT, 'audit unavailable');
+      END;
+    `);
+    database.close();
+
+    expect(() =>
+      store.updateJobWithAudit(
+        job.id,
+        (current) => ({ ...current, status: "aguardando" }),
+        [{
+          type: "stage.started",
+          stage: "catalogador",
+          status: "started",
+          summary: "Catalogador iniciado.",
+        }],
+      ),
+    ).toThrow(JobAuditUnavailableError);
+    expect(store.getJob(job.id)?.status).toBe("processando");
+    expect(store.getAudit(job.id).records.map((record) => record.type)).toEqual(["job.created"]);
+    store.close();
+  });
+
   it("enables WAL, foreign keys and a versioned migration for file databases", () => {
     const databasePath = temporaryDatabasePath();
     const store = createJobStore({ initialMode: "local", databasePath });
@@ -131,7 +163,10 @@ describe("Job store", () => {
     expect(database.prepare("PRAGMA foreign_key_list(job_images)").all()).toEqual([
       expect.objectContaining({ table: "jobs", from: "job_id", to: "id", on_delete: "CASCADE" }),
     ]);
-    expect(database.prepare("SELECT version FROM schema_migrations").all()).toEqual([{ version: 1 }]);
+    expect(database.prepare("SELECT version FROM schema_migrations").all()).toEqual([
+      { version: 1 },
+      { version: 2 },
+    ]);
     database.close();
   });
 });

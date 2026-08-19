@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import type { UserAuditPage, UserAuditRecord } from "../audit/types";
+import type { AuditStage, UserAuditPage, UserAuditRecord } from "../audit/types";
 import type { Job, ModoExecucao, Passo } from "../domain/types";
 
 type ImageInput = {
@@ -13,7 +13,16 @@ type ImageInput = {
 
 type JobRow = { job_json: string };
 type ImageRow = { bytes: Uint8Array; mime: ImageInput["mime"] };
-type AuditRow = Omit<UserAuditRecord, "schema_version" | "summary"> & { schema_version: number };
+type AuditRow = Omit<UserAuditRecord, "schema_version"> & { schema_version: number };
+
+export type PendingAuditEvent = {
+  type: Exclude<UserAuditRecord["type"], "job.created">;
+  stage: AuditStage;
+  status: UserAuditRecord["status"];
+  duration_ms?: number;
+  code?: string;
+  summary: string;
+};
 
 const PASSOS: Array<Pick<Passo, "id" | "rotulo">> = [
   { id: "identificar", rotulo: "Identificar produto" },
@@ -47,6 +56,38 @@ const MIGRATIONS = [
       payload_json TEXT NOT NULL,
       UNIQUE (job_id, sequence)
     ) STRICT;
+  `,
+  `
+    ALTER TABLE audit_records RENAME TO audit_records_v1;
+
+    CREATE TABLE audit_records (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      sequence INTEGER NOT NULL CHECK (sequence > 0),
+      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      occurred_at TEXT NOT NULL,
+      type TEXT NOT NULL CHECK (
+        type IN ('job.created', 'stage.started', 'stage.completed', 'stage.failed', 'fallback.applied')
+      ),
+      stage TEXT CHECK (stage IS NULL OR stage IN ('catalogador', 'precificador', 'redator')),
+      status TEXT NOT NULL CHECK (status IN ('started', 'completed', 'failed', 'applied')),
+      duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+      code TEXT,
+      summary TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      UNIQUE (job_id, sequence)
+    ) STRICT;
+
+    INSERT INTO audit_records (
+      id, job_id, sequence, schema_version, occurred_at, type, stage, status,
+      duration_ms, code, summary, payload_json
+    )
+    SELECT
+      id, job_id, sequence, schema_version, occurred_at, type, NULL, status,
+      NULL, NULL, 'Job criado e imagem recebida.', payload_json
+    FROM audit_records_v1;
+
+    DROP TABLE audit_records_v1;
   `,
 ] as const;
 
@@ -113,6 +154,51 @@ export function createJobStore({
     return readJob(row);
   }
 
+  function updateJobWithAudit(
+    id: string,
+    update: (job: Job) => Job,
+    events: PendingAuditEvent[],
+  ): Job | undefined {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const current = getJob(id);
+      if (!current) {
+        database.exec("ROLLBACK");
+        return undefined;
+      }
+      const updated = update(current);
+      database.prepare("UPDATE jobs SET job_json = ? WHERE id = ?").run(JSON.stringify(updated), id);
+      const sequenceRow = database
+        .prepare("SELECT COALESCE(MAX(sequence), 0) AS sequence FROM audit_records WHERE job_id = ?")
+        .get(id) as { sequence: number };
+      const insert = database.prepare(`
+        INSERT INTO audit_records (
+          id, job_id, sequence, schema_version, occurred_at, type, stage, status,
+          duration_ms, code, summary, payload_json
+        ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, '{}')
+      `);
+      for (const [index, event] of events.entries()) {
+        insert.run(
+          randomUUID(),
+          id,
+          sequenceRow.sequence + index + 1,
+          new Date().toISOString(),
+          event.type,
+          event.stage,
+          event.status,
+          event.duration_ms ?? null,
+          event.code ?? null,
+          event.summary,
+        );
+      }
+      database.exec("COMMIT");
+      return updated;
+    } catch {
+      database.exec("ROLLBACK");
+      throw new JobAuditUnavailableError();
+    }
+  }
+
   return {
     createJob(image: ImageInput): Job {
       const id = randomUUID();
@@ -148,10 +234,17 @@ export function createJobStore({
         database
           .prepare(`
             INSERT INTO audit_records (
-              id, job_id, sequence, schema_version, occurred_at, type, status, payload_json
-            ) VALUES (?, ?, 1, 1, ?, 'job.created', 'completed', ?)
+              id, job_id, sequence, schema_version, occurred_at, type, stage, status,
+              duration_ms, code, summary, payload_json
+            ) VALUES (?, ?, 1, 1, ?, 'job.created', NULL, 'completed', NULL, NULL, ?, ?)
           `)
-          .run(randomUUID(), id, occurredAt, JSON.stringify({ mode, image_mime: image.mime }));
+          .run(
+            randomUUID(),
+            id,
+            occurredAt,
+            "Job criado e imagem recebida.",
+            JSON.stringify({ mode, image_mime: image.mime }),
+          );
         database.exec("COMMIT");
         return job;
       } catch {
@@ -184,7 +277,8 @@ export function createJobStore({
       const safeLimit = Number.isSafeInteger(limit) ? Math.min(Math.max(limit, 1), 100) : 50;
       const rows = database
         .prepare(`
-          SELECT schema_version, id, job_id, sequence, occurred_at, type, status
+          SELECT schema_version, id, job_id, sequence, occurred_at, type, stage, status,
+                 duration_ms, code, summary
           FROM audit_records
           WHERE job_id = ? AND sequence > ?
           ORDER BY sequence ASC
@@ -200,8 +294,11 @@ export function createJobStore({
         sequence: row.sequence,
         occurred_at: row.occurred_at,
         type: row.type,
+        stage: row.stage,
         status: row.status,
-        summary: "Job criado e imagem recebida.",
+        duration_ms: row.duration_ms,
+        code: row.code,
+        summary: row.summary,
       }));
       return {
         schema_version: 1,
@@ -220,6 +317,8 @@ export function createJobStore({
       database.prepare("UPDATE jobs SET job_json = ? WHERE id = ?").run(JSON.stringify(updated), id);
       return updated;
     },
+
+    updateJobWithAudit,
 
     setMode(nextMode: ModoExecucao): void {
       mode = nextMode;

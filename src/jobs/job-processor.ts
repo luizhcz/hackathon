@@ -1,9 +1,14 @@
-import type { CodexRunRequest, CodexRunResult, CodexRuntime } from "../codex/codex-runtime";
+import {
+  CodexRuntimeError,
+  type CodexRunRequest,
+  type CodexRunResult,
+  type CodexRuntime,
+} from "../codex/codex-runtime";
 import { CATALOGADOR_PROMPT, precificadorPrompt, redatorPrompt } from "../codex/prompts";
 import { catalogadorSchema, precificadorSchema, redatorSchema } from "../domain/schemas";
 import type { CatalogadorOut, Job, PassoId, PrecificadorOut, RedatorOut } from "../domain/types";
 import { writeFromTemplate } from "./fallback-writer";
-import type { JobStore } from "./job-store";
+import type { JobStore, PendingAuditEvent } from "./job-store";
 import { priceFromLocalTable } from "./local-price";
 import { normalizeIdentification } from "./normalize-identification";
 
@@ -24,18 +29,40 @@ async function runWithTimeout<T>(
   timeoutMs: number,
 ): Promise<CodexRunResult<T>> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   try {
     return await runtime.run({ ...request, signal: controller.signal });
+  } catch (error) {
+    if (timedOut) throw new StageTimeoutError(error);
+    throw error;
   } finally {
     clearTimeout(timer);
   }
 }
 
+class StageTimeoutError extends Error {
+  constructor(cause: unknown) {
+    super("A etapa excedeu seu limite de tempo.", { cause });
+    this.name = "StageTimeoutError";
+  }
+}
+
+function failureCode(error: unknown): string {
+  if (error instanceof StageTimeoutError) return "TIMEOUT";
+  if (error instanceof CodexRuntimeError) {
+    return error.code === "FAILED" ? "RUNTIME_FAILED" : error.code;
+  }
+  return "RUNTIME_FAILED";
+}
+
 export function createJobProcessor({
   store,
   runtime,
-  timeouts = { catalogador: 20_000, precificador: 8_000, redator: 15_000 },
+  timeouts = { catalogador: 20_000, precificador: 30_000, redator: 15_000 },
 }: {
   store: JobStore;
   runtime: CodexRuntime;
@@ -46,7 +73,16 @@ export function createJobProcessor({
       const image = store.getImage(id);
       if (!image || !store.getJob(id)) throw new Error(`Job não encontrado: ${id}`);
 
-      store.updateJob(id, (job) => updateStep(job, "identificar", { status: "rodando" }));
+      store.updateJobWithAudit(
+        id,
+        (job) => updateStep(job, "identificar", { status: "rodando" }),
+        [{
+          type: "stage.started",
+          stage: "catalogador",
+          status: "started",
+          summary: "Catalogador iniciado.",
+        }],
+      );
       const catalogStart = Date.now();
       let produto: CatalogadorOut;
       try {
@@ -58,15 +94,17 @@ export function createJobProcessor({
           webSearch: "disabled",
         }, timeouts.catalogador);
         produto = normalizeIdentification(result.value);
-      } catch {
-        store.updateJob(id, (job) => ({
+      } catch (error) {
+        const duration = Date.now() - catalogStart;
+        const code = failureCode(error);
+        store.updateJobWithAudit(id, (job) => ({
           ...updateStep(
             updateStep(
               updateStep(
                 updateStep(job, "identificar", {
                   status: "falhou",
                   resumo: "Falha na identificação — revisão necessária",
-                  ms: Date.now() - catalogStart,
+                  ms: duration,
                 }),
                 "precificar",
                 { status: "ignorado" },
@@ -80,7 +118,17 @@ export function createJobProcessor({
           status: "excecao",
           motivo_excecao: "falha_catalogacao",
           revisao: { necessaria: true, concluida_em: null },
-        }));
+        }), [{
+          type: "stage.failed",
+          stage: "catalogador",
+          status: "failed",
+          duration_ms: duration,
+          code,
+          summary:
+            code === "TIMEOUT"
+              ? `Catalogador excedeu o limite de ${timeouts.catalogador} ms; encaminhado para revisão humana.`
+              : "Catalogador não concluiu; encaminhado para revisão humana.",
+        }]);
         return;
       }
       const motivoExcecao =
@@ -91,7 +139,8 @@ export function createJobProcessor({
             : null;
 
       if (motivoExcecao) {
-        store.updateJob(id, (job) => ({
+        const duration = Date.now() - catalogStart;
+        store.updateJobWithAudit(id, (job) => ({
           ...updateStep(
             updateStep(
               updateStep(
@@ -101,7 +150,7 @@ export function createJobProcessor({
                     motivoExcecao === "categoria_desconhecida"
                       ? "Categoria desconhecida — revisão necessária"
                       : "Confiança baixa — revisão necessária",
-                  ms: Date.now() - catalogStart,
+                  ms: duration,
                 }),
                 "precificar",
                 { status: "ignorado" },
@@ -116,23 +165,47 @@ export function createJobProcessor({
           status: "excecao",
           motivo_excecao: motivoExcecao,
           revisao: { necessaria: true, concluida_em: null },
-        }));
+        }), [{
+          type: "stage.completed",
+          stage: "catalogador",
+          status: "completed",
+          duration_ms: duration,
+          summary: "Catalogador concluiu a Identificação para revisão humana.",
+        }]);
         return;
       }
 
-      store.updateJob(id, (job) => ({
+      store.updateJobWithAudit(id, (job) => ({
         ...updateStep(job, "identificar", {
           status: "ok",
           resumo: [produto.marca, produto.produto, produto.quantidade].filter(Boolean).join(" "),
           ms: Date.now() - catalogStart,
         }),
         produto,
-      }));
+      }), [{
+        type: "stage.completed",
+        stage: "catalogador",
+        status: "completed",
+        duration_ms: Date.now() - catalogStart,
+        summary: "Catalogador concluiu a Identificação.",
+      }]);
 
-      store.updateJob(id, (job) => updateStep(job, "precificar", { status: "rodando" }));
+      store.updateJobWithAudit(
+        id,
+        (job) => updateStep(job, "precificar", { status: "rodando" }),
+        [{
+          type: "stage.started",
+          stage: "precificador",
+          status: "started",
+          summary: "Precificador iniciado.",
+        }],
+      );
       const priceStart = Date.now();
       let preco: PrecificadorOut;
-      if (store.getJob(id)?.modo_execucao === "live") {
+      let priceError: unknown = null;
+      const livePricing = store.getJob(id)?.modo_execucao === "live";
+      let usedLocalPrice = !livePricing;
+      if (livePricing) {
         try {
           const result = await runWithTimeout(runtime, {
             profile: "precificador",
@@ -141,28 +214,77 @@ export function createJobProcessor({
             webSearch: "live",
           }, timeouts.precificador);
           preco = result.value;
-        } catch {
+        } catch (error) {
+          priceError = error;
+          usedLocalPrice = true;
           preco = priceFromLocalTable(produto);
         }
       } else {
         preco = priceFromLocalTable(produto);
       }
-      const priceSummary = preco.degradado
+      const priceSummary = usedLocalPrice
         ? `R$ ${preco.preco_min}–${preco.preco_max} · tabela local · faixa da categoria`
-        : `R$ ${brl(preco.preco_sugerido)} · ${preco.referencias.length} referências · item exato`;
-      store.updateJob(id, (job) => ({
+        : `R$ ${brl(preco.preco_sugerido)} · ${preco.referencias.length} referências · ${preco.precisao.replace("_", " ")}`;
+      const priceDuration = Date.now() - priceStart;
+      const priceEvents: PendingAuditEvent[] = priceError
+        ? [
+            {
+              type: "stage.failed",
+              stage: "precificador",
+              status: "failed",
+              duration_ms: priceDuration,
+              code: failureCode(priceError),
+              summary: "Precificador não concluiu; usando a tabela local.",
+            },
+            {
+              type: "fallback.applied",
+              stage: "precificador",
+              status: "applied",
+              code: "LOCAL_PRICE_TABLE",
+              summary: "Tabela local aplicada ao preço.",
+            },
+          ]
+        : [
+            {
+              type: "stage.completed",
+              stage: "precificador",
+              status: "completed",
+              duration_ms: priceDuration,
+              summary: "Precificador concluiu o preço.",
+            },
+            ...(usedLocalPrice
+              ? [{
+                  type: "fallback.applied" as const,
+                  stage: "precificador" as const,
+                  status: "applied" as const,
+                  code: "LOCAL_PRICE_TABLE",
+                  summary: "Tabela local aplicada ao preço.",
+                }]
+              : []),
+          ];
+      store.updateJobWithAudit(id, (job) => ({
         ...updateStep(job, "precificar", {
           status: "ok",
           resumo: priceSummary,
-          ms: Date.now() - priceStart,
+          ms: priceDuration,
         }),
         preco,
-      }));
+      }), priceEvents);
 
-      store.updateJob(id, (job) => updateStep(job, "redigir", { status: "rodando" }));
+      store.updateJobWithAudit(
+        id,
+        (job) => updateStep(job, "redigir", { status: "rodando" }),
+        [{
+          type: "stage.started",
+          stage: "redator",
+          status: "started",
+          summary: "Redator iniciado.",
+        }],
+      );
       const writingStart = Date.now();
       let anuncio: RedatorOut;
       let writingSummary: string;
+      let writingError: unknown = null;
       try {
         const result = await runWithTimeout(runtime, {
           profile: "redator",
@@ -172,19 +294,46 @@ export function createJobProcessor({
         }, timeouts.redator);
         anuncio = result.value;
         writingSummary = `Título com ${anuncio.titulo.length} caracteres, ${anuncio.tags.length} tags`;
-      } catch {
+      } catch (error) {
+        writingError = error;
         anuncio = writeFromTemplate(produto, preco);
         writingSummary = "Texto gerado por template local";
       }
-      store.updateJob(id, (job) => ({
+      const writingDuration = Date.now() - writingStart;
+      const writingEvents: PendingAuditEvent[] = writingError
+        ? [
+            {
+              type: "stage.failed",
+              stage: "redator",
+              status: "failed",
+              duration_ms: writingDuration,
+              code: failureCode(writingError),
+              summary: "Redator não concluiu; usando o template local.",
+            },
+            {
+              type: "fallback.applied",
+              stage: "redator",
+              status: "applied",
+              code: "LOCAL_WRITER_TEMPLATE",
+              summary: "Template local aplicado ao Anúncio.",
+            },
+          ]
+        : [{
+            type: "stage.completed",
+            stage: "redator",
+            status: "completed",
+            duration_ms: writingDuration,
+            summary: "Redator concluiu o Anúncio.",
+          }];
+      store.updateJobWithAudit(id, (job) => ({
         ...updateStep(updateStep(job, "redigir", {
           status: "ok",
           resumo: writingSummary,
-          ms: Date.now() - writingStart,
+          ms: writingDuration,
         }), "publicar", { status: "aguardando" }),
         anuncio,
         status: "aguardando",
-      }));
+      }), writingEvents);
     },
   };
 }

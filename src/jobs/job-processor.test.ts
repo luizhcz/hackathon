@@ -109,6 +109,11 @@ describe("Job processing", () => {
         { id: "publicar", status: "aguardando" },
       ],
     });
+    expect(store.getAudit(job.id).records.at(-1)).toMatchObject({
+      type: "stage.completed",
+      stage: "catalogador",
+      status: "completed",
+    });
   });
 
   it("turns a Catalogador failure into an Exceção instead of losing the Job", async () => {
@@ -158,6 +163,21 @@ describe("Job processing", () => {
       status: "ok",
       resumo: "R$ 12,90 · 2 referências · item exato",
     });
+    expect(
+      store.getAudit(job.id).records.map((record) => ({
+        type: record.type,
+        stage: record.stage,
+        status: record.status,
+      })),
+    ).toEqual([
+      { type: "job.created", stage: null, status: "completed" },
+      { type: "stage.started", stage: "catalogador", status: "started" },
+      { type: "stage.completed", stage: "catalogador", status: "completed" },
+      { type: "stage.started", stage: "precificador", status: "started" },
+      { type: "stage.completed", stage: "precificador", status: "completed" },
+      { type: "stage.started", stage: "redator", status: "started" },
+      { type: "stage.completed", stage: "redator", status: "completed" },
+    ]);
   });
 
   it("keeps the Job publishable with local price and text when live dependencies fail", async () => {
@@ -187,6 +207,44 @@ describe("Job processing", () => {
       status: "ok",
       resumo: "Texto gerado por template local",
     });
+    expect(
+      store.getAudit(job.id).records.map((record) => [record.type, record.stage, record.code]),
+    ).toEqual([
+      ["job.created", null, null],
+      ["stage.started", "catalogador", null],
+      ["stage.completed", "catalogador", null],
+      ["stage.started", "precificador", null],
+      ["stage.failed", "precificador", "RUNTIME_FAILED"],
+      ["fallback.applied", "precificador", "LOCAL_PRICE_TABLE"],
+      ["stage.started", "redator", null],
+      ["stage.failed", "redator", "RUNTIME_FAILED"],
+      ["fallback.applied", "redator", "LOCAL_WRITER_TEMPLATE"],
+    ]);
+  });
+
+  it("does not report a local fallback for a degraded price returned by LIVE", async () => {
+    const degradedLivePrice: PrecificadorOut = {
+      ...precoLive,
+      estrategia: "descritiva",
+      precisao: "equivalente",
+      degradado: true,
+    };
+    const store = createJobStore({ initialMode: "live" });
+    const processor = createJobProcessor({
+      store,
+      runtime: createDeterministicCodexRuntime({
+        catalogador: [produto],
+        precificador: [degradedLivePrice],
+        redator: [anuncio],
+      }),
+    });
+    const job = store.createJob({ bytes: new Uint8Array([10]), mime: "image/png" });
+
+    await processor.process(job.id);
+
+    expect(
+      store.getAudit(job.id).records.some((record) => record.type === "fallback.applied"),
+    ).toBe(false);
   });
 
   it("removes an invalid EAN-13 and recalculates the identification basis", async () => {
@@ -228,5 +286,13 @@ describe("Job processing", () => {
       status: "excecao",
       motivo_excecao: "falha_catalogacao",
     });
+    expect(store.getAudit(job.id).records.at(-1)).toMatchObject({
+      type: "stage.failed",
+      stage: "catalogador",
+      status: "failed",
+      code: "TIMEOUT",
+      summary: "Catalogador excedeu o limite de 5 ms; encaminhado para revisão humana.",
+    });
+    expect(store.getAudit(job.id).records.at(-1)?.duration_ms).toBeGreaterThanOrEqual(0);
   });
 });

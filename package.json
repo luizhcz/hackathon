@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "verify": "npm run typecheck && npm test && npm run build",
-    "codex:smoke": "tsx scripts/codex-smoke.ts"
+    "codex:smoke": "tsx scripts/codex-smoke.ts",
+    "diagnose:catalogador": "tsx scripts/catalogador-diagnostic.ts"
   },
   "dependencies": {
     "@openai/codex-sdk": "0.148.0",
