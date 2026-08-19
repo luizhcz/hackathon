@@ -1,0 +1,3 @@
+# Degradar falhas técnicas e revisar identificação insegura
+
+A demo deve completar o Fluxo principal sem pedir ajuda entre o envio da foto e a confirmação da publicação. O Precificador degrada para a tabela local e o Redator degrada para um template determinístico quando suas dependências falham. O Catalogador não possui fallback capaz de produzir evidência segura: falha técnica, categoria desconhecida ou confiança baixa transformam o Job em Exceção, ignoram as etapas automáticas restantes e o enviam para a Fila de revisão humana. Sua publicação só é liberada depois que uma pessoa preenche e valida todos os campos do Anúncio. Essa fronteira sustenta tanto a promessa de autonomia quanto a demonstração explícita de segurança.

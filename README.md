@@ -6,6 +6,7 @@ Workspace de hackathon configurado para o [Claude Code](https://claude.com/claud
 
 - `CLAUDE.md` — instruções do projeto para o agente (respostas em pt-BR).
 - `.claude/skills/` — coleção de skills usadas no workspace (design de código, TDD, diagnóstico de bugs, code review, pesquisa, entre outras).
+- `docs/specs/foto-vira-anuncio.md` — spec confirmada da demo Codex de ponta a ponta.
 
 ## Como usar
 
