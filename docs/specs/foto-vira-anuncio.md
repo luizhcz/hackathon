@@ -542,6 +542,13 @@ Não invente benefício, validade, origem ou garantia.
 
 ## 12. Interface
 
+O build combina as variações validadas no protótipo visual, sem reutilizar
+diretamente seu código descartável:
+
+- `/captura`: variação A — conversa direta;
+- `/painel`: variação C — esteira do agente;
+- `/loja`: variação B.
+
 ### `/captura`
 
 - Um controle grande de câmera/arquivo.

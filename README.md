@@ -5,8 +5,20 @@ Workspace para desenvolver a demo **Foto vira anúncio** com Codex de ponta a po
 ## Documentação
 
 - `docs/specs/foto-vira-anuncio.md` — spec confirmada da demo.
+- `docs/workstreams/frontend-backend.md` — contrato e ownership para trabalho paralelo.
 - `CONTEXT.md` — glossário do domínio.
 - `docs/adr/` — decisões arquiteturais.
+
+## Trabalho paralelo
+
+A `main` contém a aplicação funcional. O protótipo visual descartável é
+desenvolvido separadamente na branch `prototype/demo-ui`, com dados simulados
+no navegador.
+
+Frontend e backend trabalham em paralelo por meio do contrato HTTP e do DTO
+`Job`. As decisões visuais escolhidas — captura A, painel C e loja B — chegam à
+aplicação por handoff e são reimplementadas nas páginas existentes; o código do
+protótipo não é mesclado diretamente.
 
 ## Como usar
 
